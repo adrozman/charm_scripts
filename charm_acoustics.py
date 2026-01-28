@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Mar 18 10:07:23 2025
+Useful functions for setting up acoustics calculations in CHARM
+@author: Adam Rozman
+"""
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import welch
+from scipy.signal.windows import hann
+import glob
+import sys
+
+# Re-writes charmobs file for new mic inputs, re-calculates tmin, tmax, and nt in charm.nam
+def acoustics_no_processing(WOPWOP_CALL, RW_PATH, BG_PATH, INPUT_PATH, MICS, padding=2.0, charm_unit_in_meters=0.3048,skip_revs=0):
+
+    mics = np.array(MICS)
+    nmics = len(mics)
+    nprops = len(RW_PATH)
+
+    [print(f"mic {i} ", mics[i,:]) for i in range(nmics)]
+
+    nblades, RPMs, XYZs, radius, MREV = read_case_info(INPUT_PATH, BG_PATH, RW_PATH)
+    periods = 60 / RPMs
+    nblades = nblades[0]             # all props have same blades. Let's convert to scalar
+    radius *= charm_unit_in_meters
+    print("radius (m) = ", radius)
+    XYZs *= charm_unit_in_meters
+    if MREV == 0:
+        MREV = False
+
+    # write new charmobs with desired microphones
+    write_wop_observerfile("charmobs_new.inp", mics)
+
+    # turn off WOPWOP's SPL calculation, set new charmobs input file, set to read just 1 propeller
+    if MREV:
+        dists = np.array([[np.linalg.norm(mics[i,:] - XYZ) for i in range(nmics)] for XYZ in XYZs])
+
+        travel_max = np.max((dists + radius) / (340))  # assuming c = 340 (not sure how CHARM decides this)
+        travel_min = np.min((dists - radius) / (340))
+
+        tmin = travel_max*padding + skip_revs*np.min(periods)
+        limit_tmax = (abs(MREV) * np.min(periods) - travel_min*padding)
+        nrevs = int( (limit_tmax - tmin) // np.min(periods) )
+        tmax = tmin + nrevs*np.min(periods)
+
+        if tmin >= tmax:
+            print("these mics require more MREV to get a signal.")
+            exit()
+
+        nt = nrevs * 1024
+        edit_wop_input("charm.nam", ("spectrumFlag", "fileName", "SPLdBFLAG", "SPLdBAFlag", "OASPLdBFlag", "OASPLdBAFlag", "tmin", "tmax", "nt"),
+                           (".false.", "'charmobs_new.inp'", ".false." , ".false.", ".false.", ".false.", tmin, tmax, nt) )
+    else:
+        nt = 1024
+        edit_wop_input("charm.nam", ("spectrumFlag", "fileName", "SPLdBFLAG", "SPLdBAFlag", "OASPLdBFlag", "OASPLdBAFlag", "tmin", "tmax", "nt"),
+                           (".false.", "'charmobs_new.inp'", ".false." , ".false.", ".false.", ".false.", 0, np.max(periods), nt) )
+
+    # run PSU-WOPWOP with new separated input files
+    os.system(WOPWOP_CALL)
+
+    print("WOPWOP completed")
+
+# returns path to input, rw, bg files, and N_PROPS
+def get_input_files():
+    try:
+        # path to .inp file. This logic should hold that it is the prefix of the PSU-WOPWOP folder name.
+        INPUT_PATH = "../" + os.path.basename(os.getcwd()).split('PSU-WOPWOP')[0] + ".inp"
+        os.stat(INPUT_PATH)
+        N_PROPS = int(get_charm_input(INPUT_PATH, "NROTOR")[0])
+        
+        if N_PROPS > 1:
+            # path to rw file. Currently, the glob.glob command finds the first file with *rw1..4*
+            RW_PATH = [glob.glob(f"../*rw{i+1}*")[0] for i in range(N_PROPS)]
+
+        else:
+            # don't look for number
+            RW_PATH = glob.glob(f"../*rw*")[0]
+
+        # path to bg file. Currently, the glob.glob commands finds the first file with *bg*
+        BG_PATH = glob.glob("../*bg*")[0]
+
+        return INPUT_PATH, N_PROPS, RW_PATH, BG_PATH
+
+    except:
+        raise FileNotFoundError("Could not find .inp or *rw* or *bg* files in the directory above. Are you running from inside ${casename}PSU-WOPWOP folder?")
+
+# reads input files to calculate nblades, RPM, XYZ, radius, MREV
+def read_case_info(INPUT_PATH, BG_PATH, RW_PATH):
+
+    if not isinstance(RW_PATH, list):
+        RW_PATH = [RW_PATH]  # Make it a list if it's not already
+
+    nprops = len(RW_PATH)
+    RPM = np.zeros(nprops)
+    XYZ = np.zeros((nprops, 3))
+    nblades = np.zeros(nprops, dtype=int)
+
+    for i, rw in enumerate(RW_PATH):
+        print("reading rw file: ", rw)
+        RPM_i, nblades_i = get_charm_input(rw, ("OMEGA", "NBLADE"))
+        RPM[i] = float(RPM_i)
+        nblades[i] = int(nblades_i)
+
+        XYZ[i, :] = np.array(get_charm_input(rw, "XROTOR", values=3)[0]).astype(float)
+
+    RPM *= 60 / (2 * np.pi)
+
+    print("Found RPMs to be ", RPM)
+    print("Found nblades ", nblades)
+    print("Found hub centers (charm units)", XYZ)
+
+    print("reading bg file: ", BG_PATH)
+    radius = get_charm_radius(BG_PATH)
+
+    print("reading charm inp file: ", INPUT_PATH)
+    MREV = get_charm_input(INPUT_PATH, "MREV")[0]
+    MREV = int(MREV)
+
+    return nblades, RPM, XYZ, radius, MREV
+
+# low-level utility functions
+#################################################################
+# edit flags in a PSU-wopwop input file
+def edit_wop_input(file_path, parameter_strings, new_values):
+    """
+    inputs: "parameter_strings" a list of settings to change e.g. [tmin, tmax]
+    to "new_values" a list of new values of the same length e.g. [0.003, 0.006]
+    at "file_path"
+    """
+    with open(file_path) as file:
+        lines = file.readlines()
+
+        # goes through lines for each "parameter_strings" element to replace
+        for parameter_string, new_value in zip(parameter_strings, new_values):
+            for i, line in enumerate(lines):
+                if (parameter_string + ' ') in line or (parameter_string + '=') in line:
+
+                    updated_line = line.split('=')[0] + '= ' + str(new_value) + '\n'
+                    lines[i] = updated_line
+
+                    break
+
+    # re-write the file
+    with open(file_path, 'w') as file:
+        file.writelines(lines)
+
+# write observer file for PSU-WOPWOP
+def write_wop_observerfile(file_path, mics):
+    N = mics.shape[0]
+    with open(file_path, 'w') as file:
+        file.write(f"1\t {N}\t 1\n")
+        for i in range(3):
+            file.write('\t'.join( list(map(lambda x: f"{x:.7f}", mics[:,i])) ) + '\n')
+
+# Function to read p3d format Fn file
+#  4th dimension elements are defined by '*.nam' file, usually
+# [observer time, thickness,loading, total noise]
+def readFnfile(filename):
+    # Read number of observers, bins from pressure file
+    with open(filename, 'r') as f:
+        header = list(map(int, f.readline().split()))
+
+    ni = header[0]      # n i stations
+    nj = header[1]      # n j stations
+    nt = header[2]      # n timesteps
+    nv = header[3]      # n variables, see .nam file
+
+    # Read the rest of the file
+    data = np.loadtxt(filename, skiprows=1)
+    B = np.reshape(data, (ni, nj, nt, nv), order='F')
+
+    return B
+
+#open rw file, calculate radius
+def get_charm_radius(file_path):
+    # inputs: file_path to charm 'rw file' to sum chord values + cutout
+    with open(file_path) as file:
+        lines = file.readlines()
+
+    radius = 0.
+    summing = False
+    for i, line in enumerate(lines):
+        if 'CUTOUT' in line:
+            radius += float(lines[i+1].split()[0])
+        elif 'SL' in line:
+            summing = True
+            continue
+        if 'CHORD' in line:
+            break
+
+        if summing:
+            radius += np.sum(np.array(line.split()).astype(float))
+
+    return radius
+
+# get values from a charm input file
+def get_charm_input(file_path, parameter_strings, values=1):
+    """
+    inputs: "file_path" file you want to look at
+            "parameter_strings" a string or a list of settings to get e.g. U or [OMEGA, U, YAW]
+            "values": special case if there are multiple values with a specific name, e.g. XROTOR
+
+    outputs: a list of values for the parameter_strings inputted.
+    """
+    if isinstance(parameter_strings, str):
+        parameter_strings = [parameter_strings]
+
+    startline = -1
+    with open(file_path) as file:
+        lines = file.readlines()
+
+    parameter_vals = []
+
+    for parameter_string in parameter_strings:
+        for i, line in enumerate(lines):
+            if (parameter_string + ' ') in line or (parameter_string + '\n') in line:
+                startline = i
+
+                # split namelist into list, find index matching "parameter_string"
+                var_index = line.split().index(parameter_string)
+
+                # data line (startline+1)
+                if values > 1:
+                    parameter_vals.append( lines[startline+1].split()[var_index:var_index+values] )
+                else:
+                    parameter_vals.append( lines[startline+1].split()[var_index] )
+
+                break
+
+    return parameter_vals
+
