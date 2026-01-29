@@ -23,8 +23,10 @@ from charm_automation import edit_charm_input, get_performance_mrev
 # we can use list repetition for repeated cases. [0]*2 = [0,0]
 # adding lists combines them. [0,1] + [3] = [1,2,3]
 rpms = [4000]*4 
-tilts = [0]*2 + [90]*2 # degrees   
-Uinfs = [0,-32.81]*2 # ft /s, in CHARM frame
+tilts = [0]*2 + [-90]*2 # degrees 
+Uinfs = [0,-32.81]*2 # ft /s, in CHARM frame.  we want negative since SFRAME 1 is vehicle, not air velocity
+# 0 degree tilt in CHARM has -Z as the propeller rotation direction. This is the experiment edgewise case (90 yaw)
+# -90 degree tilt in CHARM has has +X as the propeller rotation direction. This is the experiment axial case (0 yaw)
 
 # path definitions
 templatedir = "INPUT_TEMPLATE/Hover"
@@ -50,7 +52,7 @@ base_path = os.getcwd()
 
 # write output data text file
 outputfile=os.path.join(base_path, "charm_force_moments.txt")
-output_header = "U Yaw RPM Fx Fy Fz (lb) Mx My Mz (lb*ft)"
+output_header = "U (ft/s) Tilt (deg) RPM Fx Fy Fz (lb) Mx My Mz (lb*ft)"
 with open(outputfile,'w') as f:
     f.write(output_header+"\n") # add newline
 
@@ -62,7 +64,7 @@ for rpm, tilt, Uinf in zip(rpms, tilts, Uinfs):
     # ensure we return to home directory every loop
     os.chdir(base_path)
     # make new directory for charm run
-    new_run_directory = f"charm_runs/U{Uinf:.2f}_yaw{tilt:.2f}_rpm{rpm:.2f}".replace(".","_")
+    new_run_directory = f"charm_runs/U{Uinf:.2f}_tilt{tilt:.2f}_rpm{rpm:.2f}".replace(".","_")
 
     os.makedirs(new_run_directory, exist_ok=True)
 
