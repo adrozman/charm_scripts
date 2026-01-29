@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-charm case automation by Adam Rozman
-running will require the libraries below. The vsppytools environment sources in
-"/project/turbomac/CHARM/scc_vars.sh"  will work. 
+Useful functions for automating the setup and running of CHARM cases
+
+@author: Adam Rozman
 """
 
 import os
 import glob
 import sys
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing
-from scipy.signal import welch
-from textwrap import dedent
 
 #########################################################
 # %% UTILITY FUNCTIONS
