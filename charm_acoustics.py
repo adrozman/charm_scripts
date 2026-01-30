@@ -192,7 +192,8 @@ def get_charm_radius(file_path):
     summing = False
     for i, line in enumerate(lines):
         if 'CUTOUT' in line:
-            radius += float(lines[i+1].split()[0])
+            cutout = float(lines[i+1].split()[0])
+            radius += cutout
         elif 'SL' in line:
             summing = True
             continue
@@ -202,7 +203,8 @@ def get_charm_radius(file_path):
         if summing:
             radius += np.sum(np.array(line.split()).astype(float))
 
-    return radius
+    # these are in CHARM units, ft or m
+    return radius, cutout
 
 # get values from a charm input file for a named parameter string
 def get_charm_input(file_path, parameter_strings, values=1):

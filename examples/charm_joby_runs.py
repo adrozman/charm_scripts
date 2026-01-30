@@ -24,7 +24,8 @@ from charm_automation import edit_charm_input, get_performance_mrev
 # adding lists combines them. [0,1] + [3] = [1,2,3]
 rpms = [4000]*4 
 tilts = [0]*2 + [-90]*2 # degrees 
-Uinfs = [0,-32.81]*2 # ft /s, in CHARM frame.  we want negative since SFRAME 1 is vehicle, not air velocity
+Uinfs = [0,32.81]*2 # ft /s, in CHARM frame.  +U means blade is going forward relative to wind
+
 # 0 degree tilt in CHARM has -Z as the propeller rotation direction. This is the experiment edgewise case (90 yaw)
 # -90 degree tilt in CHARM has has +X as the propeller rotation direction. This is the experiment axial case (0 yaw)
 
@@ -81,15 +82,14 @@ for rpm, tilt, Uinf in zip(rpms, tilts, Uinfs):
     # there are multiple values for the params in this line (XROTOR & TILT)
 
     # run charm
-    print("CHARM running...")
+    print("CHARM running...",flush=True)
     os.system(CHARM_CALL)
 
     # extract forces and moments from hubacr
     force_moments = get_performance_mrev(PROCESS_MREV_CALL, casename)
-    print(force_moments)
     force_moments_str = list(map(lambda x: f"{float(x):>13.6e}", force_moments))
 
-    print("Case forces (lb) and moments (ft*lb):\n" + ' '.join(force_moments_str))
+    print("Completed. Forces (lb) and moments (ft*lb):\n" + ' '.join(force_moments_str),flush=True)
 
     # write forces and moments to output file
     with open(outputfile, "a") as f:
@@ -102,6 +102,7 @@ for rpm, tilt, Uinf in zip(rpms, tilts, Uinfs):
     INPUT_PATH, N_PROPS, RW_PATH, BG_PATH = get_input_files()
 
     # edir inputs for new mics, run wopwop
+    print("Running wopwop.",flush=True)
     acoustics_no_processing(
             WOPWOP_CALL, RW_PATH, BG_PATH, INPUT_PATH, MICS,
             padding=1.5, charm_unit_in_meters=charm_unit_in_meters)
