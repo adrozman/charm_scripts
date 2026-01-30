@@ -117,7 +117,7 @@ def read_case_info(INPUT_PATH, BG_PATH, RW_PATH):
     print("Found hub centers (charm units)", XYZ)
 
     print("reading bg file: ", BG_PATH)
-    radius = get_charm_radius(BG_PATH)
+    radius, cutout = get_charm_radius(BG_PATH)
 
     print("reading charm inp file: ", INPUT_PATH)
     MREV = get_charm_input(INPUT_PATH, "MREV")[0]
