@@ -22,9 +22,9 @@ from charm_automation import edit_charm_input, get_performance_mrev
 # variables lists for the cases we want to run. All must be the same length.
 # we can use list repetition for repeated cases. [0]*2 = [0,0]
 # adding lists combines them. [0,1] + [3] = [1,2,3]
-rpms = [4000]*4 
-tilts = [0]*2 + [-90]*2 # degrees 
-Uinfs = [0,32.81]*2 # ft /s, in CHARM frame.  +U means blade is going forward relative to wind
+rpms = [3000, 4000]*2
+tilts = [-90]*2 + [0]*2 # degrees 
+Uinfs = [32.81]*2 # ft /s, in CHARM frame.  +U means blade is going forward relative to wind
 
 # 0 degree tilt in CHARM has -Z as the propeller rotation direction. This is the experiment edgewise case (90 yaw)
 # -90 degree tilt in CHARM has has +X as the propeller rotation direction. This is the experiment axial case (0 yaw)
@@ -41,6 +41,8 @@ WOPWOP_CALL = "/project/turbomac/WOPWOP/wopwop3_linux_v3.5.1_af4377a"
 # Microphone locations (meters) as a list of lists, in the CHARM frame.
 # *Note: please put more than 1 mic or this script won't work! (it will write pressure.tec instead of pressure.fn)
 MICS = np.loadtxt("VT_mics_hover.txt")
+
+RUN_ACOUSTICS = True
 
 # unit to multiply Charm values to get in meters. If CHARM is set to feet, this should be 0.3048 (feet in meters)
 charm_unit_in_meters = 0.3048
@@ -95,16 +97,17 @@ for rpm, tilt, Uinf in zip(rpms, tilts, Uinfs):
     with open(outputfile, "a") as f:
         f.write(f"{Uinf} {tilt} {rpm} " + ' '.join(force_moments_str) + "\n")
 
-    # run wopwop
-    os.chdir(casename+"PSU-WOPWOP")
+    if RUN_ACOUSTICS:
+        # run wopwop
+        os.chdir(casename+"PSU-WOPWOP")
 
-    # Locate input, RW, BG files for processing script
-    INPUT_PATH, N_PROPS, RW_PATH, BG_PATH = get_input_files()
+        # Locate input, RW, BG files for processing script
+        INPUT_PATH, N_PROPS, RW_PATH, BG_PATH = get_input_files()
 
-    # edir inputs for new mics, run wopwop
-    print("Running wopwop.",flush=True)
-    acoustics_no_processing(
-            WOPWOP_CALL, RW_PATH, BG_PATH, INPUT_PATH, MICS,
-            padding=1.5, charm_unit_in_meters=charm_unit_in_meters)
+        # edir inputs for new mics, run wopwop
+        print("Running wopwop.",flush=True)
+        acoustics_no_processing(
+                WOPWOP_CALL, RW_PATH, BG_PATH, INPUT_PATH, MICS,
+                padding=1.5, charm_unit_in_meters=charm_unit_in_meters)
 
-    # acoustics processed in next script
+        # acoustics processed in next script

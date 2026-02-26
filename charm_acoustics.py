@@ -317,7 +317,7 @@ def p_to_SPL(pressure_array, time_array, ref_pressure=2e-5):
     return f, SPL
 
 def generate_directivity_map(spl_values, coords, filename=None,
-                             levels=np.linspace(50, 90, 41)):
+                             levels=np.linspace(50, 90, 41), xmax=2, ymax=1):
     """
     Interpolates SPL values onto a grid and plots a directivity contour map.
 
@@ -333,8 +333,8 @@ def generate_directivity_map(spl_values, coords, filename=None,
 
     # Create grid for interpolation
     grid_x, grid_y = np.meshgrid(
-        np.linspace(-2, 2, 100),
-        np.linspace(-1, 1, 50)
+        np.linspace(-xmax, xmax, 100),
+        np.linspace(-xmax, xmax, 50)
     )
 
     # Interpolate unstructured data onto the grid
@@ -348,8 +348,8 @@ def generate_directivity_map(spl_values, coords, filename=None,
     ax.set_xlabel('X (m)', fontsize=14)
     ax.set_ylabel('Y (m)', fontsize=14)
     ax.axis('equal')
-    ax.set_ylim((-1., 1.))
-    ax.set_xlim((-2., 2.))
+    ax.set_ylim((-ymax, ymax))
+    ax.set_xlim((-xmax, xmax))
 
     # Colorbar formatting
     divider = make_axes_locatable(ax)
