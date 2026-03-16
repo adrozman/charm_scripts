@@ -10,7 +10,7 @@ This python toolkit automates running and post-processing the vortex lattice / f
 | 0 | -90 | 4000 | 3.424e+01 | 9.944e-03 | 8.506e-03 | -5.007e+00 | -1.285e-03 | 4.954e-02 |
 | 32.81 | -90 | 4000 | 2.661e+01 | -4.605e-05 | -1.754e-06 | -4.845e+00 | -1.030e-04 | 1.998e-05 |
 
-### Acoustics output
+### Acoustics output (1st Blade Passage Frequency)
 #### Edgewise Inflow Case:
 <img width="768" height="364" alt="edgewise directivity" src="images/edgewise_directivity.png" />
 
