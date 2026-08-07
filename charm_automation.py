@@ -116,3 +116,84 @@ def transform_vector_frame(x, yaw, pitch, roll, aircraft_frame_input=False):
 
     #print(f"output: {x_prime}\n")
     return(x_prime)
+
+
+
+def read_perf_header(fname):
+    """
+    Read CHARM performance file header and extract configuration parameters
+    Returns: (nrotor, npsi, nx, mrev)
+    If there are multiple rotor, this code assumes they all have the same
+    NPSI and NX
+    """
+    with open(fname) as f:
+        lines = f.readlines()
+
+    nrotor = int(lines[1].split()[0])
+    npsi = int(lines[3].split()[1])
+    nx = int(lines[3].split()[2])
+
+    header_lines = 5
+
+    # Calculate MREV from total data lines
+    # Total lines = header_lines + (nrotor * mrev * npsi * nx)
+    data_lines = len(lines) - header_lines
+    lines_per_rev = nrotor * npsi * nx
+
+    # CHARM includes the initial NREV plus MREV additional revolution
+    # subtract 1 unless there is only 1 rev, meaning it's an NREV case.
+    mrev = max(data_lines // lines_per_rev - 1 , 1)
+
+    # Verify the calculation makes sense
+    # Note: We use (mrev + 1) here because the file contains mrev + 1 blocks
+    expected_data_lines = nrotor * (mrev + 1) * npsi * nx
+    if abs(data_lines - expected_data_lines) > npsi * nx:
+        print(f"WARNING: Data line count mismatch!")
+        print(f"  Data lines: {data_lines}")
+        print(f"  Expected for MREV={mrev} (+1 initial): {expected_data_lines}")
+        print(f"  Difference: {data_lines - expected_data_lines}")
+
+    return nrotor, npsi, nx, mrev
+
+##########################################
+# PERF FILE FUNCTIONS
+##########################################
+
+def read_perf(fname, nrotor, npsi, nx, mrev, var_ix):
+    """
+    Read CHARM performance data and extract specified variable
+
+    Note: mrev represents the number of new revolutions (excluding the initial azimuth at 0°)
+    The file contains mrev+1 data blocks total
+
+    File format:
+    - Top header (2 lines): NROTOR/RHO/SSPD
+    - For each rotor block, 3-line header:
+      Line 1: ROTOR NPSI NX RADIUS OMEGA ...
+      Line 2: Numeric values
+      Line 3: Column names (psi x=r/R dx ...)
+    - Then data rows
+    """
+    with open(fname) as f:
+        lines = f.readlines()
+
+    rotor_delims = []
+    for j in range(len(lines)):
+        if "ROTOR" in lines[j]:
+            rotor_delims.append(j)
+
+    var = np.zeros((nrotor, mrev, npsi, nx))
+
+    delim_ix = 1 # Start this at 1 because first 'ROTOR' instance is part of header
+    for r in range(nrotor):
+        for m in range(mrev):
+            data = np.loadtxt(lines[rotor_delims[delim_ix]+3:rotor_delims[delim_ix]+3+npsi*nx])
+            var[r, m, :, :] = data[:,var_ix].reshape((npsi,nx))
+        delim_ix += 1
+
+    psis = np.unique(data[:,0])
+    xs = np.unique(data[:,1])
+
+    var_mean = np.mean(var, axis=1)
+
+    return var_mean, psis, xs

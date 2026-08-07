@@ -1,3 +1,5 @@
 old/
 __pycache__/
 processmrev
+JOBY_DIRECTIVITY_SWEEP/directivity_plots
+JOBY_DIRECTIVITY_SWEEP/charm_runs

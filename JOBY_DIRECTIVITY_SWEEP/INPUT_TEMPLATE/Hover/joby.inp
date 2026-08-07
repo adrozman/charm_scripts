@@ -1,0 +1,51 @@
+RCtemplate.inp: Template Run Characteristics Input File
+NROTOR  IMKS
+     1   0
+PATHNAME
+../
+INPUT FILENAMES for Prop_000_000
+  Prop_000_000rw.inp
+  Prop_000bg.inp
+  Prop_000bd.inp
+  jobyXFOIL3_af.inp
+  none
+SSPD       RHO
+1116.45    .002257
+SFRAME
+1
+ U      V    W        P   Q   R
+0.0   0.0000  0.0   0   0   0.0000 
+NPSI    NREV    CONVG1    CONVG2   CONVG3   MREV
+40      10      -1.000000   -1.000000   -1.000000   25
+MPLOT  IPILOT 
+ 1      0
+IRST  IFREE  IGPR
+ 0      0      0
+IVOUT   NRS   (ROUT(I),I=1,NRS)
+  4     11  0.1  0.2  0.3  0.4  0.5  0.6  0.7  0.8  0.9  0.95  0.99
+NPRINT   IBLPLT   (IFILPLT(I),I=1,4) 
+  0        0        3  3  3  3
+IDEBUG (Debug flag)
+  0
+ISCAN (Scan plane flag)
+  1 
+ISTRSS (Stress calculation flag)
+  0
+IFV    IQUIK1
+ -1      1
+MXHLEV  FMDG  NCPU
+  8    1.0  16 
+IROHFV  IROHFP  NUPDATE  IREALT
+  2       1       0        0
+IFVFW  IFVBL  IFVSU  IFVSC  IFVLS
+  1      1      2      1      1
+ISURF
+  0
+ISHIP
+  0
+IRECON   NOISE
+  0       4
+ACOUSTIC_CODE
+  1
+NLS
+ 0
