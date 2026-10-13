@@ -105,10 +105,22 @@ def read_perf_header(fname):
 
 def read_perf(fname, nrotor, npsi, nx, mrev, var_ix):
     """
-    Read CHARM performance data and extract specified variable
+    Read CHARM performance data across all revolutions and extract specified variable(s).
     
-    Note: mrev represents the number of new revolutions (excluding the initial azimuth at 0°)
-    The file contains mrev+1 data blocks total
+    Parameters:
+    - fname: path to *perf.dat file
+    - nrotor: number of rotors
+    - npsi: azimuthal resolution
+    - nx: radial resolution
+    - mrev: number of revolutions
+    - var_ix: single column index (int) or list of indices
+    
+    Returns:
+    - var: numpy array across all revolutions
+           shape (nrotor, mrev, npsi, nx) if var_ix is scalar,
+           or (nrotor, mrev, npsi, nx, nvars) if var_ix is a list
+    - psis: array of unique azimuth angles (deg)
+    - xs: array of unique radial stations (r/R)
     
     File format:
     - Top header (2 lines): NROTOR/RHO/SSPD
@@ -116,45 +128,84 @@ def read_perf(fname, nrotor, npsi, nx, mrev, var_ix):
       Line 1: ROTOR NPSI NX RADIUS OMEGA ...
       Line 2: Numeric values
       Line 3: Column names (psi x=r/R dx ...)
-    - Then data rows
+    - Then data rows (MREV free-wake data is stacked contiguously)
 
     Columns order in the perf file:
     psi x=r/R dx dCT/dx dCQI/dx dCQP/dx X-force Y-force -Z-force P-mom AOAG CL2D
     CD2D CM2D AOA2D MACH2D U-radial V-aft W-down W-induced Circulation
     """
+
+    # Normalize var_ix: handle both single integer and iterable
+    is_scalar = np.ndim(var_ix) == 0
+    indices = [var_ix] if is_scalar else list(var_ix)
+    nvars = len(indices)
+
     with open(fname) as f:
         lines = f.readlines()
 
-    rotor_delims = []
-    for j in range(len(lines)):
-        if "ROTOR" in lines[j]:
-            rotor_delims.append(j)
+    # Locate each 'ROTOR' section header
+    rotor_delims = [j for j, line in enumerate(lines) if "ROTOR" in line]
 
-    var = np.zeros((nrotor, mrev, npsi, nx))
+    var = np.zeros((nrotor, mrev, npsi, nx, nvars))
 
-    delim_ix = 1 # Start this at 1 because first 'ROTOR' instance is part of header
-    for r in range(nrotor):
-        for m in range(mrev):
-            data = np.loadtxt(lines[rotor_delims[delim_ix]+3:rotor_delims[delim_ix]+3+npsi*nx])
-            var[r, m, :, :] = data[:,var_ix].reshape((npsi,nx))
-        delim_ix += 1
+    if mrev == 1:
+        # NREV only: each rotor block starts after its respective ROTOR header
+        for r in range(nrotor):
+            start = rotor_delims[r + 1] + 3
+            end = start + npsi * nx
+            data = np.loadtxt(lines[start:end])
+            var[r, 0, :, :, :] = data[:, indices].reshape((npsi, nx, nvars))
+    else:
+        # MREV: time-stepping data starts after all initial rotor headers/data
+        init_end = rotor_delims[nrotor] + 3 + (npsi * nx)
+        total_mrev_lines = mrev * npsi * nrotor * nx
+        data = np.loadtxt(lines[init_end : init_end + total_mrev_lines])
+        data_reshaped = data[:, indices].reshape((mrev, npsi, nrotor, nx, nvars))
+        var = np.transpose(data_reshaped, (2, 0, 1, 3, 4))
 
-    psis = np.unique(data[:,0])
-    xs = np.unique(data[:,1])
+    psis = np.unique(data[:, 0])
+    xs = np.unique(data[:, 1])
 
-    var_mean = np.mean(var, axis=1)
+    if is_scalar:
+        var = var[..., 0]
 
-    return var_mean, psis, xs
+    return var, psis, xs
     
 
-def plot_polar(psis, xs, polar_data, vmin=None, vmax=None, title=None, fname=None, nrotor=4):
-    """Create polar plots of rotor data"""
+def plot_polar(psis, xs, polar_data, vmin=None, vmax=None, title=None, fname=None, nrotor=1, spins=["CCW"]):
+    """
+    Create polar contour plots of rotor data.
+    
+    Parameters:
+    - psis: array of azimuth angles
+    - xs: array of radial stations (r/R)
+    - polar_data: 3D array of shape (nrotor, npsi, nx).
+                  Note: if polar_data comes from read_perf(), average over revolutions
+                  (e.g., np.mean(polar_data, axis=1) or np.average(polar_data[..., 0], axis=1))
+                  or slice an individual revolution before passing to plot_polar.
+    - vmin, vmax: colorbar limits
+    - title: plot/colorbar title
+    - fname: optional path to save figure (calls plt.show() if None)
+    - nrotor: number of rotor subplots to display
+    - spins: list of rotor rotation directions ('CW' or 'CCW')
+    """
+
+    if np.ndim(polar_data) != 3:
+        raise ValueError(
+            f"plot_polar expects a 3D array of shape (nrotor, npsi, nx), but received shape {np.shape(polar_data)}.\n"
+            "Note: read_perf now outputs all revolutions (4D array).\n"
+            "To plot, pass an average: np.mean(data, axis=1), or slice a single rev: data[:, rev, :, :].\n"
+            "Please refer to /projectnb/turbomac/arozman/share/examples/ for up-to-date examples."
+        )
 
     # Automatically determine global min and max if not specified
     if vmin is None:
         vmin = np.nanmin(polar_data[:nrotor])
     if vmax is None:
         vmax = np.nanmax(polar_data[:nrotor])
+
+    # Ensure spins has an entry for each rotor
+    spins = list(spins or []) + ["CCW"] * max(0, nrotor - len(spins or []))
 
     # Convert psis to radians
     theta = np.radians(psis)
@@ -169,17 +220,17 @@ def plot_polar(psis, xs, polar_data, vmin=None, vmax=None, title=None, fname=Non
     if nrotor == 1:
         fig, axs = plt.subplots(1, 1, figsize=(8, 8), 
                                 subplot_kw={'projection': 'polar'},
-                                layout='constrained')
+                                constrained_layout=True)
         axs_flat = [axs]
     elif nrotor == 2:
         fig, axs = plt.subplots(1, 2, figsize=(12, 6), 
                                 subplot_kw={'projection': 'polar'},
-                                layout='constrained')
+                                constrained_layout=True)
         axs_flat = axs.flatten()
     else:  # 3 or 4 rotors
         fig, axs = plt.subplots(2, 2, figsize=(12, 10), 
                                 subplot_kw={'projection': 'polar'},
-                                layout='constrained')
+                                constrained_layout=True)
         axs_flat = axs.flatten(order='F')
 
     mesh_objects = []  # Store plots to define colorbar later
@@ -194,12 +245,13 @@ def plot_polar(psis, xs, polar_data, vmin=None, vmax=None, title=None, fname=Non
         
         c = ax.pcolormesh(Theta, R, Z_cyclic, cmap='jet', shading='auto', vmin=vmin, 
                           vmax=vmax, edgecolor='none')
-        
-        if i == 1 or i == 2:
-            ax.set_theta_direction(-1)
-        else:
-            ax.set_theta_direction(1)
 
+        direction = str(spins[i]).strip().upper()
+        if direction == "CCW":
+            ax.set_theta_direction(1)
+        elif direction == "CW":
+            ax.set_theta_direction(-1)
+        
         mesh_objects.append(c)
 
         # Formatting individual plots
@@ -234,7 +286,7 @@ def plot_polar(psis, xs, polar_data, vmin=None, vmax=None, title=None, fname=Non
         plt.show()
 
 
-def extract_charm_aoa_mach(perf_file_path, outputs_dir="photos_dir", npy_dir="polars_dir"):
+def extract_charm_aoa_mach(perf_file_path, outputs_dir="photos_dir", npy_dir="polars_dir", spins=None):
     """Process CHARM performance data and save results - inputs for QuietFly"""
     print("\n" + "="*60)
     print("PART 1: Processing CHARM Performance Data")
@@ -262,21 +314,23 @@ def extract_charm_aoa_mach(perf_file_path, outputs_dir="photos_dir", npy_dir="po
     # psi x=r/R dx dCT/dx dCQI/dx dCQP/dx X-force Y-force -Z-force P-mom AOAG CL2D
     # CD2D CM2D AOA2D MACH2D U-radial V-aft W-down W-induced Circulation
 
-    # Read and plot AoA
+    # Read and plot AoA (averaged across revolutions)
     var_ix = 14
     polar_aoa, psis, xs = read_perf(perf_file_path, nrotor, npsi, nx, mrev, var_ix)
-    plot_polar(psis, xs, polar_aoa, vmin=-10, vmax=10, title='Local Airfoil AoA (deg)', 
-               fname=os.path.join(outputs_dir, 'polar_aoa.png'), nrotor=nrotor)
+    polar_aoa_mean = np.mean(polar_aoa, axis=1)
+    plot_polar(psis, xs, polar_aoa_mean, vmin=-10, vmax=10, title='Local Airfoil AoA (deg)', 
+               fname=os.path.join(outputs_dir, 'polar_aoa.png'), nrotor=nrotor, spins=spins)
 
-    # Read and plot Mach
+    # Read and plot Mach (averaged across revolutions)
     var_ix = 15
     polar_mach, psis, xs = read_perf(perf_file_path, nrotor, npsi, nx, mrev, var_ix)
-    plot_polar(psis, xs, polar_mach, vmin=0, vmax=0.4, title='Local Airfoil Mach', 
-               fname=os.path.join(outputs_dir, 'polar_mach.png'), nrotor=nrotor)
+    polar_mach_mean = np.mean(polar_mach, axis=1)
+    plot_polar(psis, xs, polar_mach_mean, vmin=0, vmax=0.4, title='Local Airfoil Mach', 
+               fname=os.path.join(outputs_dir, 'polar_mach.png'), nrotor=nrotor, spins=spins)
 
     # Save arrays
-    np.save(os.path.join(npy_dir, "polar_aoa.npy"), polar_aoa)
-    np.save(os.path.join(npy_dir, "polar_mach.npy"), polar_mach)
+    np.save(os.path.join(npy_dir, "polar_aoa.npy"), polar_aoa_mean)
+    np.save(os.path.join(npy_dir, "polar_mach.npy"), polar_mach_mean)
     np.savetxt(os.path.join(npy_dir, "radial_locs.txt"), xs)
     
     print("Saved aoa and mach arrays to npy_files/")
@@ -285,5 +339,4 @@ def extract_charm_aoa_mach(perf_file_path, outputs_dir="photos_dir", npy_dir="po
     plt.close()
     plt.close()
 
-
-    return polar_aoa, polar_mach, xs, nrotor, npsi
+    return polar_aoa_mean, polar_mach_mean, xs, nrotor, npsi
