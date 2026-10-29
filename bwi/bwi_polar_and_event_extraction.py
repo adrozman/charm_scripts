@@ -57,7 +57,7 @@ except ImportError:
 BWI_FILE = "jobybwi.dat"              # CHARM BWI interaction file
 PERF_FILE = "jobyperf.dat"            # CHARM performance airload file
 OUTPUT_PLOT = "bwi_polar.png"         # Output polar plot image file
-OUTPUT_CSV = "bwi_centroid_locus.csv" # Output CSV file for the centroid trajectory
+OUTPUT_CSV = "bwi_events.csv" # Output CSV file for the centroid trajectory
 
 # ------------------------------------------------------------------------------
 # 1. Flexible Rotor & Inflow Parameters
@@ -97,23 +97,28 @@ DOT_MIN_DELP_FRAC = 0.12              # Minimum fraction of peak |DelP| for plot
 #       * Increase (e.g. 0.30-0.40) to suppress minor radial ripples next to a dominant arc.
 #       * Decrease (e.g. 0.10-0.12) if a weaker inner arc is overshadowed by a strong outer arc.
 #
-#   - MIN_PEAK_PROM_FRAC (default 0.10):
+#   - MIN_PEAK_PROM_FRAC (default 0.12):
 #       Minimum vertical prominence (valley depth between adjacent radial peaks at the same
 #       azimuth) as a fraction of the local slice maximum.
 #       * Increase (e.g. 0.20) to merge closely blended double-ridges into a single arc.
 #       * Decrease (e.g. 0.05) to split closely spaced parallel arcs separated by a shallow valley.
 #
-#   - MIN_PEAK_DIST_R (default 0.05):
+#   - MIN_PEAK_DIST_R (default 0.06):
 #       Minimum radial separation dr/R between simultaneous peaks at the same azimuth.
 #       * Increase (e.g. 0.08-0.10) to enforce wider radial spacing between separate arcs.
 #       * Decrease (e.g. 0.03) if two physical BWI arcs lie very close in span.
 #
-#   - MAX_LINK_DR (default 0.07):
+#   - MAX_LINK_DR (default 0.055):
 #       Maximum radial step |r(psi_{i+1}) - r(psi_i)| allowed when linking peaks from one
-#       azimuth bin to the next, and the radial half-window (+/- MAX_LINK_DR) used to average
-#       physical vortex properties (Age, VtxCore, MissDist, Gamma) along each arc.
-#       * Increase (e.g. 0.10) if steeply sweeping oblique BVI arcs break into segments.
-#       * Decrease (e.g. 0.04-0.05) to prevent jumping between adjacent parallel arcs.
+#       azimuth bin to the next.
+#       * Increase (e.g. 0.08-0.10) if steeply sweeping oblique BVI arcs break into segments.
+#       * Decrease (e.g. 0.04) to prevent jumping between adjacent parallel arcs.
+#
+#   - LOCAL_R_WINDOW (default 0.03):
+#       Radial half-window (+/- LOCAL_R_WINDOW) around each detected ridge peak r_cen used to
+#       compute the |DelP|-weighted centroid and average physical vortex properties (Age,
+#       VtxCore, MissDist, Gamma). Kept tight (~1 radial station on each side) so adjacent
+#       parallel arcs never pull each other's centroids.
 #
 #   - MIN_ARC_SPAN_DEG (default 25.0):
 #       Minimum continuous azimuthal length [deg] required to retain a linked track as an arc.
@@ -121,9 +126,10 @@ DOT_MIN_DELP_FRAC = 0.12              # Minimum fraction of peak |DelP| for plot
 #       * Decrease (e.g. 15.0) to retain brief, localized blade-vortex encounters.
 MIN_GLOBAL_CUTOFF_FRAC = 0.10
 MIN_REL_SLICE_HEIGHT = 0.18
-MIN_PEAK_PROM_FRAC = 0.10
-MIN_PEAK_DIST_R = 0.05
-MAX_LINK_DR = 0.07
+MIN_PEAK_PROM_FRAC = 0.12
+MIN_PEAK_DIST_R = 0.06
+MAX_LINK_DR = 0.055
+LOCAL_R_WINDOW = 0.03
 MIN_ARC_SPAN_DEG = 25.0
 
 # ------------------------------------------------------------------------------
@@ -280,15 +286,29 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     print(f"  Identified close strikes (Miss <= {max_strike_miss*12:.1f} in): {len(raw_strike_df):,}")
 
     # Build 2D Polar Grid centered on CHARM's native discrete azimuths [0, dpsi, ..., 360-dpsi]
+    # and native discrete radial stations in tip_df['r_R'] to prevent radial bin aliasing
     r_data_min = tip_df['r_R'].min() if len(tip_df) > 0 else 0.20
     r_grid_min = max(0.20, np.floor(r_data_min * 10.0) / 10.0)
     r_grid_max = r_max if r_max is not None else 1.0
 
     dpsi = 360.0 / npsi_grid
     psi_edges = np.linspace(-0.5 * dpsi, 360.0 - 0.5 * dpsi, npsi_grid + 1)
-    r_edges = np.linspace(r_grid_min, r_grid_max, nr_grid + 1)
     psi_centers = np.linspace(0.0, 360.0 - dpsi, npsi_grid)
-    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+
+    r_unique = np.sort(np.round(tip_df['r_R'].values, 4))
+    r_unique = np.unique(r_unique)
+    if len(r_unique) >= 5:
+        r_centers = r_unique
+        nr_grid = len(r_centers)
+        dr_mid = 0.5 * (r_centers[:-1] + r_centers[1:])
+        dr_first = r_centers[1] - r_centers[0]
+        dr_last = r_centers[-1] - r_centers[-2]
+        r_edges = np.concatenate([[r_centers[0] - 0.5 * dr_first], dr_mid, [r_centers[-1] + 0.5 * dr_last]])
+        dr_bin = float(np.median(np.diff(r_centers)))
+    else:
+        r_edges = np.linspace(r_grid_min, r_grid_max, nr_grid + 1)
+        r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+        dr_bin = (r_grid_max - r_grid_min) / nr_grid
 
     # Wrap PSI into [-0.5*dpsi, 360 - 0.5*dpsi) so each CHARM azimuth falls in the center of its bin
     psi_vals = ((tip_df['PSI'].values + 0.5 * dpsi) % 360.0) - 0.5 * dpsi
@@ -306,7 +326,7 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     # ==========================================================================
     # METHOD 3: RADIAL MULTI-PEAK DETECTION & TRAJECTORY LINKING
     # ==========================================================================
-    min_dist_bins = max(2, int(round(MIN_PEAK_DIST_R / ((r_grid_max - r_grid_min) / nr_grid))))
+    min_dist_bins = max(2, int(round(MIN_PEAK_DIST_R / dr_bin)))
 
     peaks_by_psi = []
     for i in range(npsi_grid):
@@ -316,13 +336,15 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
             peaks_by_psi.append([])
             continue
 
+        # Pad outer boundary with 0.0 so peaks sitting on the outermost radial station are detected
+        r_slice_padded = np.append(r_slice, 0.0)
         pks, _ = find_peaks(
-            r_slice,
+            r_slice_padded,
             height=max(MIN_REL_SLICE_HEIGHT * s_max, MIN_GLOBAL_CUTOFF_FRAC * global_vmax),
             prominence=MIN_PEAK_PROM_FRAC * s_max,
             distance=min_dist_bins
         )
-        peaks_by_psi.append([{'r': r_centers[p], 'psi': psi_centers[i], 'val': r_slice[p], 'psi_idx': i} for p in pks])
+        peaks_by_psi.append([{'r': r_centers[p], 'psi': psi_centers[i], 'val': r_slice[p], 'psi_idx': i} for p in pks if p < len(r_centers)])
 
     # Nearest-neighbor linking across azimuth
     active_tracks = []
@@ -402,22 +424,22 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
         arc_rows = []
 
         for p_deg, r_cen in zip(tr['psi_arr'], tr['r_arr']):
-            # Isolate strikes in the vicinity of this arc peak (using wrapped angular distance)
+            # Count close strikes in the local vicinity of this ridge peak
             half_dpsi = 0.5 * dpsi + 1e-4
             dpsi_strikes = np.abs(((raw_strike_df['PSI'].values - p_deg + 180.0) % 360.0) - 180.0)
-            sub = raw_strike_df[
+            sub_strikes = raw_strike_df[
                 (dpsi_strikes <= half_dpsi) &
-                (np.abs(raw_strike_df['r_R'].values - r_cen) <= MAX_LINK_DR)
+                (np.abs(raw_strike_df['r_R'].values - r_cen) <= LOCAL_R_WINDOW)
             ]
-            n_str = len(sub)
+            n_str = len(sub_strikes)
 
-            # Fallback to tip_df in the same window if no sub-threshold strike landed at this station
-            if len(sub) == 0:
-                dpsi_tip = np.abs(((tip_df['PSI'].values - p_deg + 180.0) % 360.0) - 180.0)
-                sub = tip_df[
-                    (dpsi_tip <= half_dpsi) &
-                    (np.abs(tip_df['r_R'].values - r_cen) <= MAX_LINK_DR)
-                ]
+            # Extract |DelP|-weighted centroid and vortex properties from tip_df within a tight
+            # radial window (+/- LOCAL_R_WINDOW) around r_cen so adjacent arcs never pull each other
+            dpsi_tip = np.abs(((tip_df['PSI'].values - p_deg + 180.0) % 360.0) - 180.0)
+            sub = tip_df[
+                (dpsi_tip <= half_dpsi) &
+                (np.abs(tip_df['r_R'].values - r_cen) <= LOCAL_R_WINDOW)
+            ]
 
             if len(sub) > 0:
                 w = np.abs(sub['DelP_Blade'].values)
@@ -701,7 +723,7 @@ def main():
 
     for rid in target_rotors:
         plot_fname = args.output_plot if len(target_rotors) == 1 else f"bwi_polar_rotor{rid}.png"
-        csv_fname = args.output_csv if len(target_rotors) == 1 else f"bwi_centroid_locus_rotor{rid}.csv"
+        csv_fname = args.output_csv if len(target_rotors) == 1 else f"bwi_events_rotor{rid}.csv"
 
         bwi_data = extract_bwi_data(
             bwi_path=bwi_path,
