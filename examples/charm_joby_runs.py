@@ -36,7 +36,7 @@ casename = "joby" # *.inp file
 
 CHARM_CALL = "runv8rlm_nowop . joby"
 PROCESS_MREV_CALL = '/projectnb/turbomac/arozman/share/processmrev'
-WOPWOP_CALL = "/project/turbomac/WOPWOP/wopwop3_linux_v3.5.1_af4377a"
+WOPWOP_CALL = "/project/turbomac/WOPWOP/wopwop3" 
 
 # Microphone locations (meters) as a list of lists, in the CHARM frame.
 # *Note: please put more than 1 mic or this script won't work! (it will write pressure.tec instead of pressure.fn)

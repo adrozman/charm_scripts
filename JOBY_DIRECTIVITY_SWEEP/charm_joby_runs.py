@@ -21,7 +21,7 @@ from charm_automation import edit_charm_input, get_performance_mrev
 
 # variables lists for the cases we want to run. All must be the same length.
 # we can use list repetition for repeated cases. [0]*2 = [0,0]
-# adding lists combines them. [0,1] + [3] = [1,2,3]
+# adding lists combines them. [0,1] + [3] = [0,1,3]
 rpms = [3000,4000]*6 
 tilts = [0]*2 + [-10]*2 + [-20]*2    #[-90]*2 # degrees 
 Uinfs = [32.81*2]*6 # ft /s, in CHARM frame.  +U means blade is going forward relative to wind
@@ -105,10 +105,10 @@ for rpm, tilt, Uinf in zip(rpms, tilts, Uinfs):
     # Locate input, RW, BG files for processing script
     INPUT_PATH, N_PROPS, RW_PATH, BG_PATH = get_input_files()
 
-    # edir inputs for new mics, run wopwop
-#    print("Running wopwop.",flush=True)
-#    acoustics_no_processing(
-#            WOPWOP_CALL, RW_PATH, BG_PATH, INPUT_PATH, MICS,
-#            padding=1.5, charm_unit_in_meters=charm_unit_in_meters)
+    # edit inputs for new mics, run wopwop
+    print("Running wopwop.",flush=True)
+    acoustics_no_processing(
+            WOPWOP_CALL, RW_PATH, BG_PATH, INPUT_PATH, MICS,
+            padding=1.5, charm_unit_in_meters=charm_unit_in_meters)
 
     # acoustics processed in next script
