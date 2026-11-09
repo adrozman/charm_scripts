@@ -70,67 +70,30 @@ N_REVS_AVG = 5                        # Number of final converged revolutions to
 # ------------------------------------------------------------------------------
 # 2. Flexible Tip Vortex & Span Cutoff Controls
 # ------------------------------------------------------------------------------
-R_MAX = 0.95                          # Max blade span fraction to ignore artificial tip boundary spike
+R_MAX = 0.975                          # Max blade span fraction to ignore artificial tip boundary spike
 MAX_CORE_FT = 0.25                    # Maximum physical core radius [ft] to isolate tip vortices
-MIN_NV = None                         # Optional trailer index filter (None: auto-filter via MAX_CORE_FT)
+MIN_NV = 21                       # Tip vortex bundle filter (NV 21-30 are tip filaments; 1-10 are inboard sheet)
 IGNORE_SAME_BLADE = False             # True: ignore blade self-interactions (NBB == NB)
+DEFAULT_U_C_FTPS = 32.81              # Rotor inflow / wake convection velocity [ft/s] from CHARM joby.inp
 
 # ------------------------------------------------------------------------------
 # 3. Strike Encounters & Method 3 Multi-Arc Tracking Controls
 # ------------------------------------------------------------------------------
 SHOW_STRIKES = True                   # True: plot filtered strike dots AND multi-arc paths
-MAX_STRIKE_MISS_FT = 0.05             # Miss distance threshold [ft] for strikes (0.05 ft = 0.60 in)
+MAX_STRIKE_MISS_FT = 0.125            # Miss distance threshold [ft] for strikes (0.125 ft = 1.50 in, captures 1st & 2nd encounters)
 DOT_MIN_DELP_FRAC = 0.12              # Minimum fraction of peak |DelP| for plotting white strike dots
 
 # Method 3 Radial Multi-Peak Tracking Parameters:
-#   At each azimuth station psi_i, the tracker inspects the 1D radial profile |DelP(r)|
-#   to locate local radial peaks (BWI ridges) and links them across adjacent azimuths:
-#
-#   - MIN_GLOBAL_CUTOFF_FRAC (default 0.10):
-#       Minimum peak height as a fraction of the rotor-wide 99th-percentile |DelP|.
-#       Acts as a global noise floor so quiet azimuths (e.g. wake shadow) produce no peaks.
-#       * Increase (e.g. 0.15-0.25) to ignore weaker secondary/retreating arcs.
-#       * Decrease (e.g. 0.05) to capture faint inner or downwind arcs.
-#
-#   - MIN_REL_SLICE_HEIGHT (default 0.18):
-#       Minimum peak height as a fraction of the strongest peak at that SAME azimuth psi_i.
-#       * Increase (e.g. 0.30-0.40) to suppress minor radial ripples next to a dominant arc.
-#       * Decrease (e.g. 0.10-0.12) if a weaker inner arc is overshadowed by a strong outer arc.
-#
-#   - MIN_PEAK_PROM_FRAC (default 0.12):
-#       Minimum vertical prominence (valley depth between adjacent radial peaks at the same
-#       azimuth) as a fraction of the local slice maximum.
-#       * Increase (e.g. 0.20) to merge closely blended double-ridges into a single arc.
-#       * Decrease (e.g. 0.05) to split closely spaced parallel arcs separated by a shallow valley.
-#
-#   - MIN_PEAK_DIST_R (default 0.06):
-#       Minimum radial separation dr/R between simultaneous peaks at the same azimuth.
-#       * Increase (e.g. 0.08-0.10) to enforce wider radial spacing between separate arcs.
-#       * Decrease (e.g. 0.03) if two physical BWI arcs lie very close in span.
-#
-#   - MAX_LINK_DR (default 0.055):
-#       Maximum radial step |r(psi_{i+1}) - r(psi_i)| allowed when linking peaks from one
-#       azimuth bin to the next.
-#       * Increase (e.g. 0.08-0.10) if steeply sweeping oblique BVI arcs break into segments.
-#       * Decrease (e.g. 0.04) to prevent jumping between adjacent parallel arcs.
-#
-#   - LOCAL_R_WINDOW (default 0.03):
-#       Radial half-window (+/- LOCAL_R_WINDOW) around each detected ridge peak r_cen used to
-#       compute the |DelP|-weighted centroid and average physical vortex properties (Age,
-#       VtxCore, MissDist, Gamma). Kept tight (~1 radial station on each side) so adjacent
-#       parallel arcs never pull each other's centroids.
-#
-#   - MIN_ARC_SPAN_DEG (default 25.0):
-#       Minimum continuous azimuthal length [deg] required to retain a linked track as an arc.
-#       * Increase (e.g. 45.0-60.0) to filter out short localized strike clusters.
-#       * Decrease (e.g. 15.0) to retain brief, localized blade-vortex encounters.
-MIN_GLOBAL_CUTOFF_FRAC = 0.10
-MIN_REL_SLICE_HEIGHT = 0.18
-MIN_PEAK_PROM_FRAC = 0.12
-MIN_PEAK_DIST_R = 0.06
-MAX_LINK_DR = 0.055
-LOCAL_R_WINDOW = 0.03
-MIN_ARC_SPAN_DEG = 25.0
+#   Tracks distinct BWI arcs partitioned by blade_separation (Delta N_b = 1, 2, 3...)
+#   to guarantee multi-blade wake interactions (e.g. 1st vs 2nd BWI) are never merged:
+MIN_GLOBAL_CUTOFF_FRAC = 0.10         # Min peak height as fraction of global 99th percentile |DelP|
+MIN_REL_SLICE_HEIGHT = 0.18           # Min peak height as fraction of local radial slice maximum
+MIN_PEAK_PROM_FRAC = 0.10             # Min peak prominence as fraction of slice maximum
+MIN_PEAK_DIST_R = 0.05                # Min radial separation between distinct peaks (dr/R >= 0.05)
+MAX_LINK_DR = 0.06                    # Max radial step allowed when linking peaks across azimuth
+LOCAL_R_WINDOW = 0.035                # Radial half-window (+/- LOCAL_R_WINDOW) around ridge peak for centroid & vortex averaging
+MIN_ARC_SPAN_DEG = 35.0               # Minimum continuous azimuthal length [deg] for a valid continuous arc
+MIN_ARC_IMPULSE_FRAC = 0.08           # Minimum arc impulse fraction relative to dominant arc to retain secondary arcs
 
 # ------------------------------------------------------------------------------
 # 4. Aerodynamic Airload Comparison Option
@@ -152,11 +115,48 @@ ARC_PALETTE = ['#00ffff', '#39ff14', '#ffdd00', '#ff3366', '#b026ff', '#ff8800',
 # DATA EXTRACTION & MULTI-ARC IDENTIFICATION
 # ==============================================================================
 
+def extract_bound_circulation(perf_path, rotor_id=1, n_revs=5):
+    """
+    Extracts peak blade bound circulation vs azimuth from jobyperf.dat
+    across the last n_revs converged revolutions.
+    Returns:
+        psis: array of unique azimuth angles [deg]
+        peak_gam: array of peak bound circulation [ft^2/s] vs azimuth (max over span)
+    """
+    perf_path = Path(perf_path) if perf_path is not None else None
+    if perf_path is None or not perf_path.exists():
+        return None, None
+    try:
+        if read_perf_header is None or read_perf is None:
+            return None, None
+        nrotor, npsi, nx, mrev = read_perf_header(str(perf_path))
+        gam, psis, xs = read_perf(str(perf_path), nrotor, npsi, nx, mrev, 20)
+        rotor_idx = max(0, min(nrotor - 1, (rotor_id - 1) if isinstance(rotor_id, int) else 0))
+        n_avg = min(max(1, int(n_revs)), mrev)
+        gam_slice = gam[rotor_idx, -n_avg:, :, :]
+        gam_mean = np.mean(gam_slice, axis=0)  # shape (npsi, nx)
+        peak_gam = np.max(gam_mean, axis=1)    # shape (npsi,)
+        return psis, peak_gam
+    except Exception as e:
+        print(f"  Warning: could not extract bound circulation from {perf_path}: {e}")
+        return None, None
+
+
 def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
-                      r_max=R_MAX, max_core=MAX_CORE_FT, min_nv=MIN_NV,
-                      rev_mode=REV_MODE, n_revs=N_REVS_AVG, rpm=ROTOR_RPM,
-                      max_strike_miss=MAX_STRIKE_MISS_FT, dot_min_delp_frac=DOT_MIN_DELP_FRAC,
-                      npsi_grid=None, nr_grid=60, csv_output=OUTPUT_CSV):
+                     r_max=R_MAX, max_core=MAX_CORE_FT, min_nv=MIN_NV,
+                     rev_mode=REV_MODE, n_revs=N_REVS_AVG, rpm=ROTOR_RPM,
+                     u_c_ftps=DEFAULT_U_C_FTPS,
+                     max_strike_miss=MAX_STRIKE_MISS_FT, dot_min_delp_frac=DOT_MIN_DELP_FRAC,
+                     min_global_cutoff_frac=MIN_GLOBAL_CUTOFF_FRAC,
+                     min_rel_slice_height=MIN_REL_SLICE_HEIGHT,
+                     min_peak_prom_frac=MIN_PEAK_PROM_FRAC,
+                     min_peak_dist_r=MIN_PEAK_DIST_R,
+                     max_link_dr=MAX_LINK_DR,
+                     local_r_window=LOCAL_R_WINDOW,
+                     min_arc_span_deg=MIN_ARC_SPAN_DEG,
+                     min_arc_impulse_frac=MIN_ARC_IMPULSE_FRAC,
+                     debug_tracks=False,
+                     npsi_grid=None, nr_grid=60, csv_output=OUTPUT_CSV):
     """
     Reads jobybwi.dat, applies multi-rotor isolation, core filtering, and R_MAX cutoff,
     uses read_perf_header from charm_functions.py to align azimuthal bins with CHARM's
@@ -195,18 +195,7 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     file_size_mb = bwi_path.stat().st_size / (1024 * 1024)
     print(f"Reading BWI file: {bwi_path.name} ({file_size_mb:.1f} MB)...")
 
-    # Fast tail buffer for large files (>50 MB)
-    if file_size_mb > 50.0 and rev_mode != 'all_raw':
-        tail_lines = 1200000
-        cmd = ['tail', '-n', str(tail_lines), str(bwi_path)]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, _ = proc.communicate()
-        first_nl = out.find(b'\n')
-        if first_nl != -1:
-            out = out[first_nl + 1:]
-        df = pd.read_csv(io.BytesIO(out), header=None, names=BWI_COLUMNS, sep=r'\s+', low_memory=False)
-    else:
-        df = pd.read_csv(bwi_path, skiprows=2, header=None, names=BWI_COLUMNS, sep=r'\s+', low_memory=False)
+    df = pd.read_csv(bwi_path, skiprows=2, header=None, names=BWI_COLUMNS, sep=r'\s+', low_memory=False)
 
     if len(df) == 0:
         raise ValueError(f"No BWI interaction data found in {bwi_path}")
@@ -234,6 +223,9 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     else:
         rotor_id = available_rotors[0]
         df_rotor = df.copy()
+
+    # Auto-detect number of blades on this rotor for blade_separation calculation
+    n_blades = int(df_rotor['NBB'].max()) if len(df_rotor) > 0 else 1
 
     # Auto-detect Rotor RPM from Omega if not specified
     if rpm is None:
@@ -285,6 +277,95 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     raw_strike_df = tip_df[mask_strike].copy()
     print(f"  Identified close strikes (Miss <= {max_strike_miss*12:.1f} in): {len(raw_strike_df):,}")
 
+    # Compute blade_separation and revolution index k_rev on tip_df and raw_strike_df
+    #   0 = self-interaction (same blade, previous rev)
+    #   1 = 1 blade ahead (immediately preceding blade), 2 = 2 blades ahead, etc.
+    #  -1 = inter-rotor interaction (vortex shed by a different rotor, NR_src != NRB)
+    #   k_rev = floor((N1 - 1) / npsi_grid): 0 = first revolution (fresh wake), >=1 = older wake
+    tip_df['blade_separation'] = np.where(
+        tip_df['NR_src'].values == tip_df['NRB'].values,
+        (tip_df['NB'].values - tip_df['NBB'].values) % n_blades,
+        -1
+    )
+    raw_strike_df['blade_separation'] = np.where(
+        raw_strike_df['NR_src'].values == raw_strike_df['NRB'].values,
+        (raw_strike_df['NB'].values - raw_strike_df['NBB'].values) % n_blades,
+        -1
+    )
+    tip_df['k_rev'] = (tip_df['N1'].values - 1) // npsi_grid
+    raw_strike_df['k_rev'] = (raw_strike_df['N1'].values - 1) // npsi_grid
+
+    # Invariant shedding azimuth index for Lagrangian vortex packet tracking:
+    tip_df['naz_shed'] = ((tip_df['NAZ_src'].values - tip_df['N1'].values) % npsi_grid) + 1
+    raw_strike_df['naz_shed'] = ((raw_strike_df['NAZ_src'].values - raw_strike_df['N1'].values) % npsi_grid) + 1
+
+    # Extract & attach physical peak blade bound circulation Gamma_0(psi_shed) from jobyperf.dat
+    psis_perf, peak_gam_by_psi = extract_bound_circulation(perf_path, rotor_id=rotor_id, n_revs=n_revs)
+    if peak_gam_by_psi is not None and len(peak_gam_by_psi) == npsi_grid:
+        shed_idx = np.clip(tip_df['naz_shed'].values - 1, 0, npsi_grid - 1)
+        tip_df['gamma_bound_shed'] = peak_gam_by_psi[shed_idx]
+        tip_df['n_fil_est'] = tip_df['gamma_bound_shed'] / np.maximum(np.abs(tip_df['GammaVortex'].values), 1e-4)
+        tip_df['vtheta_lo_fps'] = (0.715 * tip_df['gamma_bound_shed']) / (2.0 * np.pi * np.maximum(tip_df['VtxCore'].values, 1e-4))
+        print(f"  Attached peak bound circulation from {perf_path.name}: "
+              f"shedding Gamma_0 = {peak_gam_by_psi.min():.2f}–{peak_gam_by_psi.max():.2f} ft^2/s "
+              f"(est {tip_df['n_fil_est'].mean():.1f} filaments/vortex)")
+    else:
+        tip_df['gamma_bound_shed'] = np.nan
+        tip_df['n_fil_est'] = np.nan
+        tip_df['vtheta_lo_fps'] = np.nan
+
+    # -------------------------------------------------------------------------
+    # Track Primary (1st Interaction) Properties for Secondary Interactions
+    # -------------------------------------------------------------------------
+    # Tracks the same physical vortex packet (NR_src, ZONE, NB, NV, naz_shed) from its
+    # primary encounter (sep == 1, k_rev == 0) to secondary encounters (sep > 1, k_rev == 0).
+    # In Glegg (1999) Eq. 11-12:
+    #   x_1 = wake distance from generating blade to CURRENT acoustic interaction
+    #   x_2 = wake distance from prior turbulence-ingesting (1st) blade to CURRENT interaction
+    vtx_keys = ['NR_src', 'ZONE', 'NB', 'NV', 'naz_shed']
+
+    sep1_mask = (tip_df['blade_separation'] == 1) & (tip_df['k_rev'] == 0)
+    sep1_df = tip_df[sep1_mask].copy()
+    sep1_df['w'] = np.abs(sep1_df['DelP_Blade'].values)
+    sep1_df['w_age'] = sep1_df['w'] * sep1_df['Age'].values
+    sep1_df['w_r'] = sep1_df['w'] * sep1_df['r_R'].values
+    sep1_df['w_miss'] = sep1_df['w'] * sep1_df['MissDist'].values
+    sep1_df['w_core'] = sep1_df['w'] * sep1_df['VtxCore'].values
+    sep1_df['w_perp'] = sep1_df['w'] * sep1_df['Perp'].values
+
+    g1 = sep1_df.groupby(vtx_keys).agg(
+        w_age_sum=('w_age', 'sum'),
+        w_r_sum=('w_r', 'sum'),
+        w_miss_sum=('w_miss', 'sum'),
+        w_core_sum=('w_core', 'sum'),
+        w_perp_sum=('w_perp', 'sum'),
+        w_sum=('w', 'sum')
+    ).reset_index()
+    denom = np.where(g1['w_sum'] > 0, g1['w_sum'], 1.0)
+    g1['prior_age_lookup'] = g1['w_age_sum'] / denom
+    g1['r_prior_lookup'] = g1['w_r_sum'] / denom
+    g1['miss_prior_lookup'] = g1['w_miss_sum'] / denom
+    g1['core_prior_lookup'] = g1['w_core_sum'] / denom
+    g1['perp_prior_lookup'] = g1['w_perp_sum'] / denom
+
+    lookup_cols = ['prior_age_lookup', 'r_prior_lookup', 'miss_prior_lookup', 'core_prior_lookup', 'perp_prior_lookup']
+    tip_df = tip_df.merge(g1[vtx_keys + lookup_cols], on=vtx_keys, how='left')
+
+    valid_x2 = (
+        (tip_df['blade_separation'] > 1) &
+        (tip_df['k_rev'] == 0) &
+        tip_df['prior_age_lookup'].notna() &
+        (tip_df['Age'] > tip_df['prior_age_lookup'] + 1e-4) &
+        ((tip_df['Age'] - tip_df['prior_age_lookup']) <= 1.00)
+    )
+
+    tip_df['x_1'] = tip_df['Age']
+    tip_df['x_2'] = np.where(valid_x2, tip_df['Age'] - tip_df['prior_age_lookup'], np.nan)
+    tip_df['r_prior'] = np.where(valid_x2, tip_df['r_prior_lookup'], np.nan)
+    tip_df['miss_dist_prior_ft'] = np.where(valid_x2, tip_df['miss_prior_lookup'], np.nan)
+    tip_df['vortex_core_prior_ft'] = np.where(valid_x2, tip_df['core_prior_lookup'], np.nan)
+    tip_df['sweep_perp_prior'] = np.where(valid_x2, tip_df['perp_prior_lookup'], np.nan)
+
     # Build 2D Polar Grid centered on CHARM's native discrete azimuths [0, dpsi, ..., 360-dpsi]
     # and native discrete radial stations in tip_df['r_R'] to prevent radial bin aliasing
     r_data_min = tip_df['r_R'].min() if len(tip_df) > 0 else 0.20
@@ -315,8 +396,12 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     r_vals = tip_df['r_R'].values
     weights = np.abs(tip_df['DelP_Blade'].values)
 
-    grid_raw, _, _ = np.histogram2d(psi_vals, r_vals, bins=[psi_edges, r_edges], weights=weights)
-    grid_raw = grid_raw / n_revs_norm
+    # Use cell-mean |DelP_Blade| so the 2D field represents physical mean surface pressure perturbation
+    c_all, _, _ = np.histogram2d(psi_vals, r_vals, bins=[psi_edges, r_edges])
+    ws_all, _, _ = np.histogram2d(psi_vals, r_vals, bins=[psi_edges, r_edges], weights=weights)
+    grid_raw = np.zeros_like(ws_all)
+    nz = c_all > 0
+    grid_raw[nz] = ws_all[nz] / c_all[nz]
 
     pad = 6
     grid_pad = np.pad(grid_raw, ((pad, pad), (0, 0)), mode='wrap')
@@ -324,98 +409,133 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     global_vmax = np.percentile(grid_smooth[grid_smooth > 0], 99.0) if np.any(grid_smooth > 0) else 1.0
 
     # ==========================================================================
-    # METHOD 3: RADIAL MULTI-PEAK DETECTION & TRAJECTORY LINKING
+    # METHOD 3: MULTI-BLADE PARTITIONED RADIAL MULTI-PEAK DETECTION & TRACKING
     # ==========================================================================
-    min_dist_bins = max(2, int(round(MIN_PEAK_DIST_R / dr_bin)))
+    min_dist_bins = max(2, int(round(min_peak_dist_r / dr_bin)))
 
-    peaks_by_psi = []
-    for i in range(npsi_grid):
-        r_slice = grid_smooth[i, :]
-        s_max = r_slice.max()
-        if s_max < MIN_GLOBAL_CUTOFF_FRAC * global_vmax:
-            peaks_by_psi.append([])
+    all_tracks = []
+    seps = sorted(tip_df['blade_separation'].unique())
+    for s in seps:
+        if s <= 0:
             continue
+        sub_sep = tip_df[(tip_df['blade_separation'] == s) & (tip_df['k_rev'] == 0)]
+        if len(sub_sep) < 50:
+            continue
+        p_s = ((sub_sep['PSI'].values + 0.5 * dpsi) % 360.0) - 0.5 * dpsi
+        r_s = sub_sep['r_R'].values
+        w_s = np.abs(sub_sep['DelP_Blade'].values)
+        c_s, _, _ = np.histogram2d(p_s, r_s, bins=[psi_edges, r_edges])
+        ws_s, _, _ = np.histogram2d(p_s, r_s, bins=[psi_edges, r_edges], weights=w_s)
+        mg_s = np.zeros_like(ws_s)
+        nz_s = c_s > 0
+        mg_s[nz_s] = ws_s[nz_s] / c_s[nz_s]
+        mg_pad = np.pad(mg_s, ((pad, pad), (0, 0)), mode='wrap')
+        mg_smooth = ndi.gaussian_filter(mg_pad, sigma=(1.0, 1.0))[pad:-pad, :]
 
-        # Pad outer boundary with 0.0 so peaks sitting on the outermost radial station are detected
-        r_slice_padded = np.append(r_slice, 0.0)
-        pks, _ = find_peaks(
-            r_slice_padded,
-            height=max(MIN_REL_SLICE_HEIGHT * s_max, MIN_GLOBAL_CUTOFF_FRAC * global_vmax),
-            prominence=MIN_PEAK_PROM_FRAC * s_max,
-            distance=min_dist_bins
-        )
-        peaks_by_psi.append([{'r': r_centers[p], 'psi': psi_centers[i], 'val': r_slice[p], 'psi_idx': i} for p in pks if p < len(r_centers)])
+        peaks_by_psi = []
+        for i in range(npsi_grid):
+            r_slice = mg_smooth[i, :]
+            s_max = r_slice.max()
+            if s_max < min_global_cutoff_frac * global_vmax:
+                peaks_by_psi.append([])
+                continue
 
-    # Nearest-neighbor linking across azimuth
-    active_tracks = []
-    finished_tracks = []
+            r_slice_padded = np.append(r_slice, 0.0)
+            pks, _ = find_peaks(
+                r_slice_padded,
+                height=max(min_rel_slice_height * s_max, min_global_cutoff_frac * global_vmax),
+                prominence=min_peak_prom_frac * s_max,
+                distance=min_dist_bins
+            )
+            peaks_by_psi.append([{'r': r_centers[p], 'psi': psi_centers[i], 'val': r_slice[p], 'psi_idx': i} for p in pks if p < len(r_centers)])
 
-    for i in range(npsi_grid):
-        current_peaks = peaks_by_psi[i]
-        matched_tracks = set()
-        matched_peaks = set()
+        # Nearest-neighbor linking across azimuth
+        active_tracks = []
+        finished_tracks = []
 
-        if active_tracks and current_peaks:
+        for i in range(npsi_grid):
+            current_peaks = peaks_by_psi[i]
+            matched_tracks = set()
+            matched_peaks = set()
+
+            if active_tracks and current_peaks:
+                for t_idx, track in enumerate(active_tracks):
+                    last_r = track['r'][-1]
+                    best_p_idx = None
+                    best_dr = float('inf')
+                    for p_idx, pk in enumerate(current_peaks):
+                        if p_idx in matched_peaks:
+                            continue
+                        dr = abs(pk['r'] - last_r)
+                        if dr < best_dr and dr <= max_link_dr:
+                            best_dr = dr
+                            best_p_idx = p_idx
+
+                    if best_p_idx is not None:
+                        track['psi'].append(current_peaks[best_p_idx]['psi'])
+                        track['r'].append(current_peaks[best_p_idx]['r'])
+                        track['val'].append(current_peaks[best_p_idx]['val'])
+                        matched_tracks.add(t_idx)
+                        matched_peaks.add(best_p_idx)
+
+            surviving = []
             for t_idx, track in enumerate(active_tracks):
-                last_r = track['r'][-1]
-                best_p_idx = None
-                best_dr = float('inf')
-                for p_idx, pk in enumerate(current_peaks):
-                    if p_idx in matched_peaks:
-                        continue
-                    dr = abs(pk['r'] - last_r)
-                    if dr < best_dr and dr <= MAX_LINK_DR:
-                        best_dr = dr
-                        best_p_idx = p_idx
+                if t_idx in matched_tracks:
+                    surviving.append(track)
+                else:
+                    finished_tracks.append(track)
+            active_tracks = surviving
 
-                if best_p_idx is not None:
-                    track['psi'].append(current_peaks[best_p_idx]['psi'])
-                    track['r'].append(current_peaks[best_p_idx]['r'])
-                    track['val'].append(current_peaks[best_p_idx]['val'])
-                    matched_tracks.add(t_idx)
-                    matched_peaks.add(best_p_idx)
+            for p_idx, pk in enumerate(current_peaks):
+                if p_idx not in matched_peaks:
+                    active_tracks.append({
+                        'psi': [pk['psi']],
+                        'r': [pk['r']],
+                        'val': [pk['val']],
+                        'sep': s
+                    })
 
-        surviving = []
-        for t_idx, track in enumerate(active_tracks):
-            if t_idx in matched_tracks:
-                surviving.append(track)
-            else:
-                finished_tracks.append(track)
-        active_tracks = surviving
+        finished_tracks.extend(active_tracks)
 
-        for p_idx, pk in enumerate(current_peaks):
-            if p_idx not in matched_peaks:
-                active_tracks.append({
-                    'psi': [pk['psi']],
-                    'r': [pk['r']],
-                    'val': [pk['val']]
+        for track in finished_tracks:
+            psi_arr = np.array(track['psi'])
+            r_arr = np.array(track['r'])
+            val_arr = np.array(track['val'])
+            span_deg = psi_arr.max() - psi_arr.min()
+            is_valid = (span_deg >= min_arc_span_deg) and (len(psi_arr) >= 5)
+            if debug_tracks:
+                status_str = "QUALIFIED" if is_valid else f"REJECTED (span={span_deg:.1f} < {min_arc_span_deg} or pts={len(psi_arr)} < 5)"
+                print(f"    [DEBUG sep={s}] Candidate track: ψ={psi_arr.min():.0f}–{psi_arr.max():.0f}°, r={r_arr.min():.2f}–{r_arr.max():.2f}, impulse={val_arr.sum():.1f} -> {status_str}")
+            if is_valid:
+                all_tracks.append({
+                    'sep': s,
+                    'psi_arr': psi_arr,
+                    'r_arr': r_arr,
+                    'val_arr': val_arr,
+                    'total_val': val_arr.sum(),
+                    'span_deg': span_deg,
+                    'r_min': r_arr.min(),
+                    'r_max': r_arr.max(),
+                    'mean_r': r_arr.mean()
                 })
 
-    finished_tracks.extend(active_tracks)
+    if all_tracks:
+        all_tracks.sort(key=lambda x: x['total_val'], reverse=True)
+        max_val = all_tracks[0]['total_val']
+        valid_tracks = []
+        for tr in all_tracks:
+            frac = tr['total_val'] / max_val
+            accepted = (frac >= min_arc_impulse_frac) and (len(valid_tracks) < 6)
+            if debug_tracks:
+                print(f"    [DEBUG] Track sep={tr['sep']} (ψ={tr['psi_arr'].min():.0f}–{tr['psi_arr'].max():.0f}°): impulse={tr['total_val']:.1f} ({frac*100:.1f}% of max) -> {'ACCEPTED' if accepted else 'DROPPED (below impulse cutoff)'}")
+            if accepted:
+                valid_tracks.append(tr)
+    else:
+        valid_tracks = []
 
-    # Filter by minimum span and rank by total impulse
-    valid_tracks = []
-    for track in finished_tracks:
-        psi_arr = np.array(track['psi'])
-        r_arr = np.array(track['r'])
-        val_arr = np.array(track['val'])
-        span_deg = psi_arr.max() - psi_arr.min()
-        if span_deg >= MIN_ARC_SPAN_DEG and len(psi_arr) >= 3:
-            valid_tracks.append({
-                'psi_arr': psi_arr,
-                'r_arr': r_arr,
-                'val_arr': val_arr,
-                'total_val': val_arr.sum(),
-                'span_deg': span_deg,
-                'r_min': r_arr.min(),
-                'r_max': r_arr.max(),
-                'mean_r': r_arr.mean()
-            })
+    print(f"  Method 3 identified {len(valid_tracks)} continuous BWI event trajectories (partitioned by blade_separation):")
 
-    valid_tracks.sort(key=lambda x: x['total_val'], reverse=True)
-    print(f"  Method 3 identified {len(valid_tracks)} continuous BWI arc trajectories:")
-
-    # Build Centroid Locus Table for all identified arcs
+    # Build Centroid Locus Table for all identified events
     arc_data_list = []
     all_locus_rows = []
 
@@ -424,77 +544,118 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
         arc_rows = []
 
         for p_deg, r_cen in zip(tr['psi_arr'], tr['r_arr']):
-            # Count close strikes in the local vicinity of this ridge peak
             half_dpsi = 0.5 * dpsi + 1e-4
             dpsi_strikes = np.abs(((raw_strike_df['PSI'].values - p_deg + 180.0) % 360.0) - 180.0)
             sub_strikes = raw_strike_df[
+                (raw_strike_df['blade_separation'] == tr['sep']) &
+                (raw_strike_df['k_rev'] == 0) &
                 (dpsi_strikes <= half_dpsi) &
-                (np.abs(raw_strike_df['r_R'].values - r_cen) <= LOCAL_R_WINDOW)
+                (np.abs(raw_strike_df['r_R'].values - r_cen) <= local_r_window)
             ]
             n_str = len(sub_strikes)
 
-            # Extract |DelP|-weighted centroid and vortex properties from tip_df within a tight
-            # radial window (+/- LOCAL_R_WINDOW) around r_cen so adjacent arcs never pull each other
             dpsi_tip = np.abs(((tip_df['PSI'].values - p_deg + 180.0) % 360.0) - 180.0)
             sub = tip_df[
+                (tip_df['blade_separation'] == tr['sep']) &
+                (tip_df['k_rev'] == 0) &
                 (dpsi_tip <= half_dpsi) &
-                (np.abs(tip_df['r_R'].values - r_cen) <= LOCAL_R_WINDOW)
+                (np.abs(tip_df['r_R'].values - r_cen) <= local_r_window)
             ]
 
-            if len(sub) > 0:
-                w = np.abs(sub['DelP_Blade'].values)
-                w_sum = np.sum(w) if np.sum(w) > 0 else 1.0
-                r_weighted = np.sum(sub['r_R'].values * w) / w_sum
-                miss_bar = np.sum(sub['MissDist'].values * w) / w_sum
-                core_bar = np.sum(sub['VtxCore'].values * w) / w_sum
-                gamma_bar = np.sum(sub['GammaVortex'].values * w) / w_sum
-                perp_bar = np.sum(sub['Perp'].values * w) / w_sum
-                age_bar = np.sum(sub['Age'].values * w) / w_sum
-                delp_mean = np.mean(w)
-                delp_max = np.max(w)
-                blade_prim = sub['NBB'].mode()[0] if len(sub) > 0 else 1
-                vtx_blade = sub['NB'].mode()[0] if len(sub) > 0 else 1
-            else:
-                r_weighted = r_cen
-                miss_bar = 0.0
-                core_bar = 0.0
-                gamma_bar = 0.0
-                perp_bar = 0.0
-                age_bar = 0.0
-                delp_mean = tr['val_arr'][np.where(tr['psi_arr'] == p_deg)[0][0]]
-                delp_max = delp_mean
-                blade_prim = 1
-                vtx_blade = 1
+            if len(sub) == 0:
+                sub = tip_df[
+                    (tip_df['blade_separation'] == tr['sep']) &
+                    (tip_df['k_rev'] == 0) &
+                    (dpsi_tip <= half_dpsi) &
+                    (np.abs(tip_df['r_R'].values - r_cen) <= max_link_dr)
+                ]
+
+            if len(sub) == 0:
+                continue
+
+            w = np.abs(sub['DelP_Blade'].values)
+            w_sum = np.sum(w) if np.sum(w) > 0 else 1.0
+            r_weighted = np.sum(sub['r_R'].values * w) / w_sum
+            miss_bar = np.sum(sub['MissDist'].values * w) / w_sum
+            core_bar = np.sum(sub['VtxCore'].values * w) / w_sum
+            gamma_bar = np.sum(sub['GammaVortex'].values * w) / w_sum
+            perp_bar = np.sum(sub['Perp'].values * w) / w_sum
+            age_bar = np.sum(sub['Age'].values * w) / w_sum
+            delp_mean = np.mean(w)
+            delp_max = np.max(w)
+
+            def _wmean_metric(col):
+                if col in sub.columns:
+                    v = sub[col].notna()
+                    if v.any():
+                        wv = np.abs(sub.loc[v, 'DelP_Blade'].values)
+                        wv_sum = np.sum(wv) if np.sum(wv) > 0 else 1.0
+                        return float(np.sum(sub.loc[v, col].values * wv) / wv_sum)
+                return np.nan
+
+            x_2_bar = _wmean_metric('x_2') if tr['sep'] > 1 else np.nan
+            r_prior_bar = _wmean_metric('r_prior') if tr['sep'] > 1 else np.nan
+            miss_prior_bar = _wmean_metric('miss_dist_prior_ft') if tr['sep'] > 1 else np.nan
+            core_prior_bar = _wmean_metric('vortex_core_prior_ft') if tr['sep'] > 1 else np.nan
+            perp_prior_bar = _wmean_metric('sweep_perp_prior') if tr['sep'] > 1 else np.nan
+            gamma_bound_bar = _wmean_metric('gamma_bound_shed')
+
+            # Physical wake convection distance in feet: x = U_c * (tau_rev * T_rev)
+            # Following Glegg (1999) Eq. 11-12:
+            #   x_1_ft = distance from generating blade to CURRENT interaction
+            #   x_2_ft = distance from 1st chopping blade to CURRENT interaction
+            t_rev_s = 60.0 / rpm if (rpm is not None and rpm > 0) else 1.0
+            x_1_ft = u_c_ftps * (age_bar * t_rev_s)
+            x_2_ft = u_c_ftps * (x_2_bar * t_rev_s) if not np.isnan(x_2_bar) else np.nan
+
+            # Filament metrics: read dynamically from BWI data, NEVER hardcoded
+            n_fil_active = int(len(sub['NV'].unique())) if 'NV' in sub.columns else np.nan
 
             row = {
                 'arc_id': arc_id,
-                'rotor_id': rotor_id,
+                'blade_separation': tr['sep'],
                 'psi_deg': p_deg,
                 'r_centroid': r_weighted,
                 'delp_blade_mean': delp_mean,
                 'delp_blade_max': delp_max,
                 'miss_dist_ft': miss_bar,
-                'miss_dist_in': miss_bar * 12.0,
                 'vortex_core_ft': core_bar,
-                'vortex_gamma': gamma_bar,
+                'vortex_gamma_bound': gamma_bound_bar,
+                'n_filaments_active': n_fil_active,
                 'sweep_perp': perp_bar,
-                'vortex_age_rev': age_bar,
+                'x_1_ft': x_1_ft,
+                'x_2_ft': x_2_ft,
+                'r_prior': r_prior_bar,
+                'miss_dist_prior_ft': miss_prior_bar,
+                'vortex_core_prior_ft': core_prior_bar,
+                'sweep_perp_prior': perp_prior_bar,
                 'n_strikes': n_str,
-                'primary_blade': blade_prim,
-                'vortex_blade': vtx_blade
             }
             arc_rows.append(row)
-            all_locus_rows.append(row)
 
+        if len(arc_rows) < 5:
+            continue
+
+        all_locus_rows.extend(arc_rows)
         arc_df = pd.DataFrame(arc_rows)
-        mean_age = arc_df['vortex_age_rev'].mean()
-        print(f"    Arc {arc_id}: r/R={tr['r_min']:.2f}–{tr['r_max']:.2f} (ψ={tr['psi_arr'].min():.0f}–{tr['psi_arr'].max():.0f}°, Age={mean_age:.2f} rev, {len(arc_df)} stations)")
+        r_span = (float(arc_df['r_centroid'].min()), float(arc_df['r_centroid'].max()))
+        psi_span = (float(arc_df['psi_deg'].min()), float(arc_df['psi_deg'].max()))
+        mean_x1_ft = float(arc_df['x_1_ft'].dropna().mean()) if 'x_1_ft' in arc_df and arc_df['x_1_ft'].notna().any() else np.nan
+        mean_x2_ft = float(arc_df['x_2_ft'].dropna().mean()) if 'x_2_ft' in arc_df and arc_df['x_2_ft'].notna().any() else np.nan
+        x2_str = f", x2={mean_x2_ft:.3f} ft" if not np.isnan(mean_x2_ft) else ""
+        mean_gam_b = float(arc_df['vortex_gamma_bound'].dropna().mean()) if 'vortex_gamma_bound' in arc_df and arc_df['vortex_gamma_bound'].notna().any() else np.nan
+        gam_str = f", Γ₀={mean_gam_b:.1f} ft²/s" if not np.isnan(mean_gam_b) else ""
+        print(f"    Event {arc_id} (Sep {tr['sep']}): r/R={r_span[0]:.2f}–{r_span[1]:.2f} (ψ={psi_span[0]:.0f}–{psi_span[1]:.0f}°, x1={mean_x1_ft:.3f} ft{x2_str}{gam_str}, {len(arc_df)} stations)")
         arc_data_list.append({
             'arc_id': arc_id,
             'rotor_id': rotor_id,
-            'r_span': (tr['r_min'], tr['r_max']),
-            'psi_span': (tr['psi_arr'].min(), tr['psi_arr'].max()),
-            'mean_age': mean_age,
+            'sep': tr['sep'],
+            'r_span': r_span,
+            'psi_span': psi_span,
+            'mean_age': mean_x1_ft,
+            'mean_x1': mean_x1_ft,
+            'mean_x2': mean_x2_ft,
+            'mean_gamma_bound': mean_gam_b,
             'df': arc_df
         })
 
@@ -504,7 +665,7 @@ def extract_bwi_data(bwi_path=BWI_FILE, perf_path=PERF_FILE, rotor_id=ROTOR_ID,
     if csv_output and len(locus_df) > 0:
         csv_file = Path(csv_output)
         locus_df.to_csv(csv_file, index=False)
-        print(f"  Saved Multi-Arc Centroid Locus ({len(locus_df)} points across {len(valid_tracks)} arcs) to: {csv_file.resolve()}")
+        print(f"  Saved Multi-Event Centroid Locus ({len(locus_df)} points across {len(arc_data_list)} events) to: {csv_file.resolve()}")
 
     # Package clean data structures
     dot_mask = (np.abs(raw_strike_df['DelP_Blade']) >= dot_min_delp_frac * np.abs(raw_strike_df['DelP_Blade']).max())
@@ -641,8 +802,12 @@ def plot_bwi_polar(bwi_data, perf_data=None, output_path=OUTPUT_PLOT, show_strik
         arc_theta = np.radians(arc_df['psi_deg'].values)
         arc_r = arc_df['r_centroid'].values
 
+        sep_label = f" (Sep {arc['sep']})" if 'sep' in arc else ""
+        age_label = f"Dist={arc['mean_age']:.3f} ft"
+        if 'mean_x2' in arc and arc['mean_x2'] is not None and not np.isnan(arc['mean_x2']):
+            age_label += f", $x_2$={arc['mean_x2']:.3f} ft"
         ax_bwi.plot(arc_theta, arc_r, color=col, linewidth=2.6, zorder=5,
-                    label=f"Arc {arc['arc_id']}: r/R={arc['r_span'][0]:.2f}–{arc['r_span'][1]:.2f} (ψ={arc['psi_span'][0]:.0f}–{arc['psi_span'][1]:.0f}°, Age={arc['mean_age']:.2f} rev)")
+                    label=f"Event {arc['arc_id']}{sep_label}: r/R={arc['r_span'][0]:.2f}–{arc['r_span'][1]:.2f} (ψ={arc['psi_span'][0]:.0f}–{arc['psi_span'][1]:.0f}°, {age_label})")
         ax_bwi.scatter(arc_theta, arc_r, s=36, color=col, edgecolor='black',
                        linewidth=0.9, zorder=6)
 
@@ -655,12 +820,11 @@ def plot_bwi_polar(bwi_data, perf_data=None, output_path=OUTPUT_PLOT, show_strik
     }.get(rev_mode, rev_mode)
 
     rotor_title = f" (Rotor {rotor_id})" if len(bwi_data['available_rotors']) > 1 else ""
-    ax_bwi.set_title(f"CHARM BWI Severity: Multi-Arc |DelP-Blade|{rotor_title}\n"
-                     f"[{mode_title_desc} | Core < {MAX_CORE_FT:.2f} ft | r/R ≤ {r_max:.2f}]",
-                     fontsize=11, weight='bold', pad=15)
+    ax_bwi.set_title(f"CHARM BWI Events: |DelP-Blade|{rotor_title}",
+                     fontsize=12, weight='bold', pad=14)
 
     cb_bwi = fig.colorbar(c_bwi, ax=ax_bwi, orientation='horizontal', fraction=0.046, pad=0.1, shrink=0.85)
-    cb_bwi.set_label(r"Mean Delta Pressure $\langle |\Delta P_{\mathrm{blade}}| \rangle$ [$\mathrm{lbf/ft^2/rev}$]", fontsize=9)
+    cb_bwi.set_label(r"Mean Delta Pressure $\langle |\Delta P_{\mathrm{blade}}| \rangle$ [$\mathrm{lbf/ft^2}$]", fontsize=9)
     cb_bwi.ax.tick_params(labelsize=8)
 
     # Panel 2: Aerodynamic Loading Rate |dFz/dpsi| from jobyperf.dat
@@ -692,7 +856,7 @@ def plot_bwi_polar(bwi_data, perf_data=None, output_path=OUTPUT_PLOT, show_strik
         cb_perf.ax.tick_params(labelsize=8)
 
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
-    print(f"\nSaved Multi-Arc Polar Plot to: {Path(output_path).resolve()}")
+    print(f"\nSaved Multi-Event Polar Plot to: {Path(output_path).resolve()}")
     #plt.show()
 
 
@@ -701,13 +865,34 @@ def plot_bwi_polar(bwi_data, perf_data=None, output_path=OUTPUT_PLOT, show_strik
 # ==============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="CHARM Multi-Arc BWI Polar Plotter & Locus Extractor")
+    parser = argparse.ArgumentParser(description="CHARM Multi-Event BWI Polar Plotter & Locus Extractor")
     parser.add_argument("--case-dir", type=str, default=".", help="Directory containing jobybwi.dat & jobyperf.dat")
     parser.add_argument("--rotor-id", default=ROTOR_ID, help="Rotor ID to process (1, 2, ... or 'all')")
     parser.add_argument("--r-max", type=float, default=R_MAX, help="Max blade span fraction (default: 0.95)")
     parser.add_argument("--n-revs", type=int, default=N_REVS_AVG, help="Converged revolutions to average (default: 5)")
     parser.add_argument("--output-plot", type=str, default=OUTPUT_PLOT, help="Output plot filename")
     parser.add_argument("--output-csv", type=str, default=OUTPUT_CSV, help="Output CSV filename")
+    parser.add_argument("--u-c-ftps", type=float, default=DEFAULT_U_C_FTPS,
+                        help=f"Convection / inflow velocity [ft/s] for wake distance conversion (default: {DEFAULT_U_C_FTPS})")
+    # Tracker Tolerance Knobs for Sensitivity Analysis:
+    parser.add_argument("--max-link-dr", type=float, default=MAX_LINK_DR,
+                        help=f"Max radial jump allowed when linking peaks across azimuth (default: {MAX_LINK_DR})")
+    parser.add_argument("--min-arc-span", type=float, default=MIN_ARC_SPAN_DEG,
+                        help=f"Min azimuthal span [deg] for valid event (default: {MIN_ARC_SPAN_DEG})")
+    parser.add_argument("--min-global-cutoff", type=float, default=MIN_GLOBAL_CUTOFF_FRAC,
+                        help=f"Min peak height fraction of global 99th pct |DelP| (default: {MIN_GLOBAL_CUTOFF_FRAC})")
+    parser.add_argument("--min-rel-slice-height", type=float, default=MIN_REL_SLICE_HEIGHT,
+                        help=f"Min peak height fraction of local slice max (default: {MIN_REL_SLICE_HEIGHT})")
+    parser.add_argument("--min-peak-prom", type=float, default=MIN_PEAK_PROM_FRAC,
+                        help=f"Min peak prominence fraction of slice max (default: {MIN_PEAK_PROM_FRAC})")
+    parser.add_argument("--min-peak-dist-r", type=float, default=MIN_PEAK_DIST_R,
+                        help=f"Min radial separation between distinct peaks (default: {MIN_PEAK_DIST_R})")
+    parser.add_argument("--min-arc-impulse", type=float, default=MIN_ARC_IMPULSE_FRAC,
+                        help=f"Min event impulse fraction relative to dominant arc (default: {MIN_ARC_IMPULSE_FRAC})")
+    parser.add_argument("--local-r-window", type=float, default=LOCAL_R_WINDOW,
+                        help=f"Radial half-window for centroid averaging (default: {LOCAL_R_WINDOW})")
+    parser.add_argument("--debug-tracks", action="store_true",
+                        help="Print detailed tracker linking and candidate evaluation debug logs")
     args = parser.parse_args()
 
     case_path = Path(args.case_dir)
@@ -715,7 +900,7 @@ def main():
     perf_path = case_path / PERF_FILE
 
     print("=" * 76)
-    print("CHARM BWI Multi-Arc Extraction & Characterization")
+    print("CHARM BWI Multi-Event Extraction & Characterization")
     print("=" * 76)
 
     # Handle multi-rotor processing
@@ -731,6 +916,16 @@ def main():
             rotor_id=int(rid) if isinstance(rid, str) and rid.isdigit() else rid,
             r_max=args.r_max,
             n_revs=args.n_revs,
+            min_global_cutoff_frac=args.min_global_cutoff,
+            min_rel_slice_height=args.min_rel_slice_height,
+            min_peak_prom_frac=args.min_peak_prom,
+            min_peak_dist_r=args.min_peak_dist_r,
+            max_link_dr=args.max_link_dr,
+            local_r_window=args.local_r_window,
+            min_arc_span_deg=args.min_arc_span,
+            min_arc_impulse_frac=args.min_arc_impulse,
+            u_c_ftps=args.u_c_ftps,
+            debug_tracks=args.debug_tracks,
             csv_output=csv_fname
         )
 
